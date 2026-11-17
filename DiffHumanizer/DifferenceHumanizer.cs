@@ -5,20 +5,63 @@ using System.ComponentModel.DataAnnotations;
 using System.Reflection;
 using System.Text;
 using DiffHumanizer.Annotations;
+using DiffHumanizer.Abstractions;
+using DiffHumanizer.Metadata;
+using DiffHumanizer.Formatting;
 
 namespace DiffHumanizer
 {
     public class DifferenceHumanizer
     {
-        private DifferenceHumanizerConfiguration config;
-        private Dictionary<string, string> ignorePairs;        
+        private readonly DifferenceHumanizerConfiguration config;
+        private readonly Dictionary<string, string> ignorePairs;
+        private readonly bool processAllFields;
+        private readonly IEntityMetadataProvider metadataProvider;
+        private readonly IValueFormatter valueFormatter;
+
         public bool TrimStrings { get; set; }
         public bool ReturnNullWhenNoChanges { get; set; }
 
-        public DifferenceHumanizer(DifferenceHumanizerConfiguration config, Dictionary<string, string> ignorePairs = null)
+        /// <summary>
+        /// Initializes a new instance of DifferenceHumanizer with dependency injection support.
+        /// </summary>
+        /// <remarks>
+        /// This constructor supports optional dependency injection for extensibility:
+        /// - If no metadataProvider is specified, uses AttributeMetadataProvider (reads .NET attributes)
+        /// - If no valueFormatter is specified, uses DefaultValueFormatter (standard value-to-string conversion)
+        /// 
+        /// This design follows the Dependency Inversion Principle, allowing custom implementations
+        /// of IEntityMetadataProvider and IValueFormatter to be substituted without modifying
+        /// the core DifferenceHumanizer logic.
+        /// </remarks>
+        /// <param name="config">
+        /// The configuration object containing humanization preferences (operation names, boolean representations, etc.).
+        /// This parameter is required.
+        /// </param>
+        /// <param name="ignorePairs">
+        /// Optional dictionary of value pairs to ignore during comparison.
+        /// When both old and new values match a pair in this dictionary, the difference is skipped.
+        /// </param>
+        /// <param name="processAllFields">
+        /// If true, processes all fields including those without [Display] attribute.
+        /// If false (default), only processes fields with [Display] attribute.
+        /// </param>
+        /// <param name="metadataProvider">
+        /// Optional custom metadata provider for entity metadata (name, description, ignore rules).
+        /// If null, uses AttributeMetadataProvider by default.
+        /// </param>
+        /// <param name="valueFormatter">
+        /// Optional custom value formatter for object-to-string conversion.
+        /// If null, uses DefaultValueFormatter by default.
+        /// </param>
+        /// <exception cref="ArgumentNullException">Thrown if config is null.</exception>
+        public DifferenceHumanizer(DifferenceHumanizerConfiguration config, Dictionary<string, string> ignorePairs = null, bool processAllFields = false, IEntityMetadataProvider metadataProvider = null, IValueFormatter valueFormatter = null)
         {
-            this.config = config;
+            this.config = config ?? throw new ArgumentNullException(nameof(config));
             this.ignorePairs = ignorePairs;
+            this.processAllFields = processAllFields;
+            this.metadataProvider = metadataProvider != null ? metadataProvider : (IEntityMetadataProvider)new AttributeMetadataProvider();
+            this.valueFormatter = valueFormatter != null ? valueFormatter : new DefaultValueFormatter(config);
         }
 
         public string HumanizedOperationToString(DifferenceHumanizerOperation operation)
@@ -96,84 +139,24 @@ namespace DiffHumanizer
             return operation;
         }
 
-        public static string GetHumanizedEntityName(object obj)
+        public string GetHumanizedEntityName(object obj)
         {
-            var typeInfo = obj.GetType().GetTypeInfo();
-            var props = typeInfo.GetProperties();
-            foreach (var propInfo in props)
-            {
-                var nameattr = propInfo.GetCustomAttribute<HumanizerEntityNameAttribute>();
-                if (nameattr != null)
-                {
-                    return (string)propInfo.GetValue(obj);
-                }
-            }
-
-            var attr = typeInfo.GetCustomAttribute<DisplayAttribute>();
-            if (attr != null)
-            {
-                return attr.Name;
-            }
-            else
-            {
-                return obj.GetType().Name;
-            }
+            return metadataProvider.GetEntityName(obj);
         }
 
-        public static string GetHumanizedEntityDescription(object obj)
+        public string GetHumanizedEntityDescription(object obj)
         {
-            var typeInfo = obj.GetType().GetTypeInfo();
-            var props = typeInfo.GetProperties();
-            foreach (var propInfo in props)
-            {
-                var attr = propInfo.GetCustomAttribute<HumanizerEntityDescriptionAttribute>();
-                if (attr != null)
-                {
-                    if (propInfo.PropertyType == typeof(string))
-                    {
-                        return (string)propInfo.GetValue(obj);
-                    }
-                    else
-                    {
-                        return propInfo.GetValue(obj)?.ToString();
-                    }
-                }
-            }
-
-            return null;
+            return metadataProvider.GetEntityDescription(obj);
         }
 
-        public static bool IsEntityShouldBeIgnored(object obj)
+        public bool IsEntityShouldBeIgnored(object obj)
         {
-            var typeInfo = obj.GetType().GetTypeInfo();
-            var props = typeInfo.GetProperties();
-            foreach (var propInfo in props)
-            {
-                var attr = propInfo.GetCustomAttribute<HumanizerIgnoreEntityAttribute>();
-                if (attr != null)
-                {
-                    if (propInfo.PropertyType == typeof(bool))
-                    {
-                        return (bool)propInfo.GetValue(obj);
-                    }
-                    else
-                    if (propInfo.PropertyType == typeof(int))
-                    {
-                        return (int)propInfo.GetValue(obj)>0;
-                    }
-                    else
-                    if (propInfo.PropertyType == typeof(string))
-                    {
-                        return !string.IsNullOrEmpty((string)propInfo.GetValue(obj));
-                    }
-                }
-            }
-
-            return false;
+            return metadataProvider.ShouldIgnoreEntity(obj);
         }
 
-        private static string GetItemKey(object item)
+        private string GetItemKey(object item)
         {
+            string result = null;
             var props = item.GetType().GetProperties();
             foreach (var prop in props)
             {
@@ -184,50 +167,28 @@ namespace DiffHumanizer
                     {
                         return null;
                     }
-                    return value.ToString();
+                    if (!string.IsNullOrEmpty(result))
+                    {
+                        result += "|";
+                    }
+                    result += value.ToString();
                 }
             }
-
-            return null;
+            return result;
         }
 
         private string GetValueString(object value, Type type)
         {
-            if (!type.IsValueType && value == null)
-            {
-                return "null";
-            }
-            if (Nullable.GetUnderlyingType(type) != null && value == null)
-            {
-                return "null";
-            }
-
-            if (Nullable.GetUnderlyingType(type) == typeof(bool))
-            {
-                if (((bool?)value).Value)
-                    return config.TrueValue;
-                else
-                    return config.FalseValue;
-            }
-
-            if (type == typeof(bool))
-            {
-                if ((bool)value)
-                    return config.TrueValue;
-                else
-                    return config.FalseValue;
-            }
-
-            return value.ToString();
+            return valueFormatter.Format(type, value);
         }
 
         // For objects whose implement interface IHumanizedChanges<T>
-        public static string GetCustomHumanizedPropertyDifferences<T>(T object1, T object2) where T : class 
+        public string GetCustomHumanizedPropertyDifferences<T>(T object1, T object2) where T : class 
         {
             var obj = object1 ?? object2;
             if ((obj as IHumanizedChanges<T>) == null)
             {
-                throw new Exception("Object must implement interface IHumanizedChanges<T>!");
+                throw new InvalidOperationException("Object must implement interface IHumanizedChanges<T>!");
             }
 
             var result = new StringBuilder();
@@ -312,6 +273,11 @@ namespace DiffHumanizer
                 props = object2.GetType().GetProperties();
             }
 
+            if (props == null)
+            {
+                return false;
+            }
+
             foreach (var propInfo in props)
             {
                 if (propInfo.GetCustomAttribute<HumanizerIgnoreAttribute>() != null)
@@ -319,10 +285,21 @@ namespace DiffHumanizer
                     continue;
                 }
 
+                var displayName = "";
                 var displayAttr = propInfo.GetCustomAttribute<DisplayAttribute>();
-                if (displayAttr == null || string.IsNullOrEmpty(displayAttr.Name))
+                if (displayAttr != null)
+                {
+                    displayName = displayAttr.Name;
+                }
+
+                if (string.IsNullOrEmpty(displayName) && !processAllFields)
                 {
                     continue;
+                }
+
+                if (string.IsNullOrEmpty(displayName))
+                {
+                    displayName = propInfo.Name;
                 }
 
                 var strValue = "null";
@@ -366,129 +343,9 @@ namespace DiffHumanizer
 
                 if ((value != null || oldValue != null) && propInfo.PropertyType != typeof(string) && typeof(IEnumerable).IsAssignableFrom(propInfo.PropertyType))
                 {
-                    if (oldValue != null)
+                    if (CompareCollections(propInfo, oldValue, value, displayName, baseOperation, diffStr))
                     {
-                        foreach (var oldItem in (IEnumerable)oldValue)
-                        {
-                            if (IsEntityShouldBeIgnored(oldItem))
-                              continue;
-
-                            var key = GetItemKey(oldItem);
-                            var isFound = false;
-                            object foundNewItem = null;
-                            if (value != null)
-                            {
-                                foreach (var newItem in (IEnumerable)value)
-                                {
-                                    if (IsEntityShouldBeIgnored(newItem))
-                                        continue;
-                                    if (GetItemKey(newItem) == key)
-                                    {
-                                        foundNewItem = newItem;
-                                        isFound = true;
-                                        break;
-                                    }
-                                }
-                            }
-
-                            if (!isFound)
-                            {
-                                result = true;
-                                var str = "";
-                                if (baseOperation == DifferenceHumanizerOperation.Modify)
-                                {
-                                    str = config.DeletedItemOperation + " ";
-                                }
-                                var descr = GetHumanizedEntityDescription(oldItem);
-                                if (!string.IsNullOrEmpty(descr))
-                                {
-                                    descr = "\"" + descr + "\"";
-                                }
-                                diffStr.Add((str + displayAttr.Name + " " + descr).TrimEnd());
-
-                                var list2 = new List<string>();
-                                GetHumanizedPropertyDifferencesBase(oldItem, null, baseOperation, list2);
-                                if (list2.Count > 0)
-                                {
-                                    diffStr[diffStr.Count - 1] = diffStr[diffStr.Count - 1] + " : " + list2[0];
-                                    for (var k = 1; k < list2.Count; k++)
-                                    {
-                                        diffStr.Add(list2[k]);
-                                    }
-                                }
-                            }
-                            else
-                            {
-                                var descr = GetHumanizedEntityDescription(oldItem);
-                                if (!string.IsNullOrEmpty(descr))
-                                {
-                                    descr = "\"" + descr + "\"";
-                                }
-                                var str = (config.ModifiedItemOperation + " " + displayAttr.Name + " " + descr).TrimEnd();
-                                var list = new List<string>();
-                                GetHumanizedPropertyDifferencesBase(oldItem, foundNewItem, baseOperation, list);
-                                if (list.Count > 0)
-                                {
-                                    result = true;
-                                    diffStr.Add(str + " : " + list[0]);
-                                    for (var k = 1; k < list.Count; k++)
-                                    {
-                                        diffStr.Add(list[k]);
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    if (value != null)
-                    {
-                        foreach (var item in (IEnumerable)value)
-                        {
-                            if (IsEntityShouldBeIgnored(item))
-                                continue;
-
-                            var itemKey = GetItemKey(item);
-                            var isFound = false;
-                            if (oldValue != null)
-                            {
-                                foreach (var oldValueItem in (IEnumerable)oldValue)
-                                {
-                                    if (IsEntityShouldBeIgnored(oldValueItem))
-                                        continue;
-                                    if (GetItemKey(oldValueItem) == itemKey)
-                                    {
-                                        isFound = true;
-                                        break;
-                                    }
-                                }
-                            }
-
-                            if (!isFound)
-                            {
-                                result = true;
-                                var str = "";
-                                if (baseOperation == DifferenceHumanizerOperation.Modify)
-                                {
-                                    str = config.NewItemOperation + " ";
-                                }
-                                var descr = GetHumanizedEntityDescription(item);
-                                if (!string.IsNullOrEmpty(descr))
-                                {
-                                    descr = "\"" + descr + "\"";
-                                }
-                                diffStr.Add((str + displayAttr.Name + " " + descr).TrimEnd());
-                                var list = new List<string>();
-                                GetHumanizedPropertyDifferencesBase(null, item, baseOperation, list);
-                                if (list.Count > 0)
-                                {
-                                    diffStr[diffStr.Count - 1] = diffStr[diffStr.Count - 1] + " : " + list[0];
-                                    for (var k = 1; k < list.Count; k++)
-                                    {
-                                        diffStr.Add(list[k]);
-                                    }
-                                }
-                            }
-                        }
+                        result = true;
                     }
                 }
                 else
@@ -497,17 +354,159 @@ namespace DiffHumanizer
                     result = true;
                     if (object1 != null && object2 != null)
                     {
-                        diffStr.Add($"{displayAttr.Name} : \"{oldStrValue}\" => \"{strValue}\"");
+                        diffStr.Add($"{displayName} : \"{oldStrValue}\" => \"{strValue}\"");
                     }
                     else
                     if (object1 != null)
                     {
-                        diffStr.Add($"{displayAttr.Name} : \"{oldStrValue}\"");
+                        diffStr.Add($"{displayName} : \"{oldStrValue}\"");
                     }
                     else
                     if (object2 != null)
                     {
-                        diffStr.Add($"{displayAttr.Name} : \"{strValue}\"");
+                        diffStr.Add($"{displayName} : \"{strValue}\"");
+                    }
+                }
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Compares two collections based on item keys and reports differences.
+        /// </summary>
+        /// <param name="propInfo">The property information for the collection.</param>
+        /// <param name="oldValue">The old collection value (may be null).</param>
+        /// <param name="value">The new collection value (may be null).</param>
+        /// <param name="displayName">The display name of the collection property.</param>
+        /// <param name="baseOperation">The base operation being performed (Create, Update, Delete).</param>
+        /// <param name="diffStr">The list to which differences are added.</param>
+        /// <returns>True if differences were found, false otherwise.</returns>
+        private bool CompareCollections(PropertyInfo propInfo, object oldValue, object value, string displayName, DifferenceHumanizerOperation baseOperation, IList<string> diffStr)
+        {
+            var result = false;
+
+            if (oldValue != null)
+            {
+                foreach (var oldItem in (IEnumerable)oldValue)
+                {
+                    if (IsEntityShouldBeIgnored(oldItem))
+                      continue;
+
+                    var key = GetItemKey(oldItem);
+                    var isFound = false;
+                    object foundNewItem = null;
+                    if (value != null)
+                    {
+                        foreach (var newItem in (IEnumerable)value)
+                        {
+                            if (IsEntityShouldBeIgnored(newItem))
+                                continue;
+                            if (GetItemKey(newItem) == key)
+                            {
+                                foundNewItem = newItem;
+                                isFound = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!isFound)
+                    {
+                        result = true;
+                        var str = "";
+                        if (baseOperation == DifferenceHumanizerOperation.Modify)
+                        {
+                            str = config.DeletedItemOperation + " ";
+                        }
+                        var descr = GetHumanizedEntityDescription(oldItem);
+                        if (!string.IsNullOrEmpty(descr))
+                        {
+                            descr = "\"" + descr + "\"";
+                        }
+                        diffStr.Add((str + displayName + " " + descr).TrimEnd());
+
+                        var list2 = new List<string>();
+                        GetHumanizedPropertyDifferencesBase(oldItem, null, baseOperation, list2);
+                        if (list2.Count > 0)
+                        {
+                            diffStr[diffStr.Count - 1] = diffStr[diffStr.Count - 1] + " : " + list2[0];
+                            for (var k = 1; k < list2.Count; k++)
+                            {
+                                diffStr.Add(list2[k]);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        var descr = GetHumanizedEntityDescription(oldItem);
+                        if (!string.IsNullOrEmpty(descr))
+                        {
+                            descr = "\"" + descr + "\"";
+                        }
+                        var str = (config.ModifiedItemOperation + " " + displayName + " " + descr).TrimEnd();
+                        var list = new List<string>();
+                        GetHumanizedPropertyDifferencesBase(oldItem, foundNewItem, baseOperation, list);
+                        if (list.Count > 0)
+                        {
+                            result = true;
+                            diffStr.Add(str + " : " + list[0]);
+                            for (var k = 1; k < list.Count; k++)
+                            {
+                                diffStr.Add(list[k]);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (value != null)
+            {
+                foreach (var item in (IEnumerable)value)
+                {
+                    if (IsEntityShouldBeIgnored(item))
+                        continue;
+
+                    var itemKey = GetItemKey(item);
+                    var isFound = false;
+                    if (oldValue != null)
+                    {
+                        foreach (var oldValueItem in (IEnumerable)oldValue)
+                        {
+                            if (IsEntityShouldBeIgnored(oldValueItem))
+                                continue;
+                            if (GetItemKey(oldValueItem) == itemKey)
+                            {
+                                isFound = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!isFound)
+                    {
+                        result = true;
+                        var str = "";
+                        if (baseOperation == DifferenceHumanizerOperation.Modify)
+                        {
+                            str = config.NewItemOperation + " ";
+                        }
+                        var descr = GetHumanizedEntityDescription(item);
+                        if (!string.IsNullOrEmpty(descr))
+                        {
+                            descr = "\"" + descr + "\"";
+                        }
+                        diffStr.Add((str + displayName + " " + descr).TrimEnd());
+                        var list = new List<string>();
+                        GetHumanizedPropertyDifferencesBase(null, item, baseOperation, list);
+                        if (list.Count > 0)
+                        {
+                            diffStr[diffStr.Count - 1] = diffStr[diffStr.Count - 1] + " : " + list[0];
+                            for (var k = 1; k < list.Count; k++)
+                            {
+                                diffStr.Add(list[k]);
+                            }
+                        }
                     }
                 }
             }
@@ -516,3 +515,4 @@ namespace DiffHumanizer
         }
     }
 }
+

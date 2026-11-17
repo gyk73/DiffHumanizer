@@ -41,7 +41,7 @@ If somebody modified the phone number:
 Modified Customer "Sample Customer" Modified Contact possibilitiy : Type : "Phone", Value : "0670114455" => "0670114445"
 ```
 
-Of the customer name was modified:
+If the customer name was modified:
 
 ```
 Modified Customer "Sample Customer" "Name": "Good Customer" => "Sample Customer"
@@ -49,7 +49,7 @@ Modified Customer "Sample Customer" "Name": "Good Customer" => "Sample Customer"
 
 ## Usage
 
-Just construct the instance of DifferenceHumanizer with possibly modified options and call the GetHumanizedPropertyDifferences method which returns the string:
+Construct the instance of DifferenceHumanizer with possibly modified options and call the GetHumanizedPropertyDifferences method which returns the string:
 
 ```
 var humanizer = new DifferenceHumanizer(new DifferenceHumanizerConfiguration());
@@ -63,7 +63,7 @@ Console.WriteLine(str);
 
 For definig the human-readable property and object names use the "standard" DisplayAttribute from the System.ComponentModel.DataAnnotations namespace.
 
-Beside of that attribute there are some Diffhumanizer-specific attributes:
+There are some Diffhumanizer-specific attributes:
 
 - HumanizerIgnoreAttribute - for ignoring the property
 
