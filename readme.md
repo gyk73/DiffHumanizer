@@ -61,7 +61,7 @@ Console.WriteLine(str);
 
 ## Annotations
 
-For definig the human-readable property and object names use the "standard" DisplayAttribute from the System.ComponentModel.DataAnnotations namespace.
+For definig the human-readable property and object names the "standard" DisplayAttribute from the System.ComponentModel.DataAnnotations namespace can be used.
 
 There are some Diffhumanizer-specific attributes:
 
